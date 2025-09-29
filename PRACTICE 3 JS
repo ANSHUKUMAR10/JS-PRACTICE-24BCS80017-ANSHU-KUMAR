@@ -1,0 +1,116 @@
+const express = require('express');
+const bodyParser = require('body-parser');
+
+const app = express();
+app.use(bodyParser.json());
+
+// =============== Config ===============
+const LOCK_TTL_MS = 60 * 1000; // 1 minute lock time
+
+// =============== In-Memory Seats ===============
+// Each seat: { state: 'available'|'locked'|'booked', lockedBy?: string, lockTimer?: Timeout }
+const seats = new Map();
+
+// Create 12 seats (1–12)
+for (let i = 1; i <= 12; i++) {
+  seats.set(String(i), { state: 'available' });
+}
+
+// =============== Helpers ===============
+function lockSeat(seatId, userId) {
+  const s = seats.get(seatId);
+  if (!s) return { ok: false, message: 'Seat not found' };
+  if (s.state === 'booked') return { ok: false, message: 'Seat already booked' };
+  if (s.state === 'locked') {
+    if (s.lockedBy === userId) return { ok: false, message: 'Seat already locked by you' };
+    return { ok: false, message: 'Seat locked by another user' };
+  }
+
+  // lock it
+  s.state = 'locked';
+  s.lockedBy = userId;
+
+  // setup lock expiry
+  if (s.lockTimer) clearTimeout(s.lockTimer);
+  s.lockTimer = setTimeout(() => {
+    if (s.state === 'locked' && s.lockedBy === userId) {
+      s.state = 'available';
+      delete s.lockedBy;
+      delete s.lockTimer;
+      console.log(`Lock expired for seat ${seatId}`);
+    }
+  }, LOCK_TTL_MS);
+
+  return { ok: true, message: `Seat ${seatId} locked by ${userId}` };
+}
+
+function confirmSeat(seatId, userId) {
+  const s = seats.get(seatId);
+  if (!s) return { ok: false, message: 'Seat not found' };
+  if (s.state === 'booked') return { ok: false, message: 'Seat already booked' };
+  if (s.state !== 'locked') return { ok: false, message: 'Seat is not locked' };
+  if (s.lockedBy !== userId) return { ok: false, message: 'Seat locked by another user' };
+
+  s.state = 'booked';
+  if (s.lockTimer) clearTimeout(s.lockTimer);
+  delete s.lockTimer;
+  delete s.lockedBy;
+  return { ok: true, message: `Seat ${seatId} confirmed for ${userId}` };
+}
+
+function unlockSeat(seatId, userId) {
+  const s = seats.get(seatId);
+  if (!s) return { ok: false, message: 'Seat not found' };
+  if (s.state !== 'locked') return { ok: false, message: 'Seat is not locked' };
+  if (s.lockedBy !== userId) return { ok: false, message: 'Seat locked by another user' };
+
+  s.state = 'available';
+  if (s.lockTimer) clearTimeout(s.lockTimer);
+  delete s.lockTimer;
+  delete s.lockedBy;
+  return { ok: true, message: `Seat ${seatId} unlocked` };
+}
+
+// =============== Routes ===============
+
+// Get all seats
+app.get('/seats', (req, res) => {
+  const all = {};
+  for (let [id, s] of seats) {
+    all[id] = { state: s.state, lockedBy: s.lockedBy || null };
+  }
+  res.json(all);
+});
+
+// Lock seat
+app.post('/lock', (req, res) => {
+  const { seatId, userId } = req.body;
+  if (!seatId || !userId) return res.status(400).json({ ok: false, message: 'seatId and userId required' });
+  const result = lockSeat(String(seatId), String(userId));
+  if (!result.ok) return res.status(409).json(result);
+  res.json(result);
+});
+
+// Confirm seat
+app.post('/confirm', (req, res) => {
+  const { seatId, userId } = req.body;
+  if (!seatId || !userId) return res.status(400).json({ ok: false, message: 'seatId and userId required' });
+  const result = confirmSeat(String(seatId), String(userId));
+  if (!result.ok) return res.status(409).json(result);
+  res.json(result);
+});
+
+// Unlock seat
+app.post('/unlock', (req, res) => {
+  const { seatId, userId } = req.body;
+  if (!seatId || !userId) return res.status(400).json({ ok: false, message: 'seatId and userId required' });
+  const result = unlockSeat(String(seatId), String(userId));
+  if (!result.ok) return res.status(409).json(result);
+  res.json(result);
+});
+
+// =============== Start ===============
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
